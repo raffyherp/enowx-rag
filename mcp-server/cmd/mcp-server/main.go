@@ -19,6 +19,7 @@ type Config struct {
 	VectorStore  string // qdrant, chroma, pgvector
 	Embedder     string // tei, openai, voyage
 	QdrantURL    string // REST URL, e.g. http://localhost:6333 or https://qdrant.example.com
+	QdrantAPIKey string // optional API key for secured Qdrant instances
 	ChromaURL    string
 	PGVectorDSN  string
 	TEIBaseURL   string // e.g. http://localhost:8081
@@ -35,6 +36,7 @@ func loadConfig() Config {
 		VectorStore:  getEnv("RAG_VECTOR_STORE", "qdrant"),
 		Embedder:     getEnv("RAG_EMBEDDER", "voyage"),
 		QdrantURL:    getEnv("RAG_QDRANT_URL", "http://localhost:6333"),
+		QdrantAPIKey: getEnv("RAG_QDRANT_API_KEY", ""),
 		ChromaURL:    getEnv("RAG_CHROMA_URL", "http://localhost:8000"),
 		PGVectorDSN:  getEnv("RAG_PGVECTOR_DSN", ""),
 		TEIBaseURL:   getEnv("RAG_TEI_URL", "http://localhost:8081"),
@@ -77,7 +79,7 @@ func buildProvider(ctx context.Context, cfg Config) (rag.Provider, error) {
 
 	switch strings.ToLower(cfg.VectorStore) {
 	case "qdrant":
-		return rag.NewQdrantProvider(ctx, cfg.QdrantURL, embedder)
+		return rag.NewQdrantProvider(ctx, cfg.QdrantURL, cfg.QdrantAPIKey, embedder)
 	case "chroma":
 		return rag.NewChromaProvider(cfg.ChromaURL, embedder), nil
 	case "pgvector":
@@ -201,8 +203,13 @@ func main() {
 		Name:        "rag_index_project",
 		Description: "Scan a project directory and auto-index all code/text files into RAG. Handles insertions (new/changed files) and deletions (removed files). Skips node_modules, .git, vendor, dist, build. Run this when the codebase changes.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ScanProjectInput) (*mcp.CallToolResult, any, error) {
+		// Use a long-lived context so large projects don't time out under the
+		// MCP framework's short request deadline. 30 minutes is enough for
+		// even very large monorepos.
+		indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
 		idx := indexer.NewIndexer(provider, 1500)
-		result, err := idx.IndexProject(ctx, in.ProjectID, in.Directory)
+		result, err := idx.IndexProject(indexCtx, in.ProjectID, in.Directory)
 		if err != nil {
 			return nil, nil, err
 		}
